@@ -146,6 +146,99 @@ struct measure_result_t
 
 class a_ring_member_t : public so_5::agent_t
 	{
+		static void
+		direct_delivery_demand_handler(
+			so_5::current_thread_id_t /*working_thread_id*/,
+			so_5::execution_demand_t & d )
+			{
+				auto * self = static_cast<a_ring_member_t *>(d.m_receiver);
+				self->on_message(
+						d.m_msg_type,
+						d.m_message_ref );
+			}
+
+		class special_direct_mbox_t final
+			: public so_5::abstract_message_box_t
+			{
+				a_ring_member_t * m_target;
+
+				const so_5::mbox_id_t m_id;
+
+			public :
+				special_direct_mbox_t(
+					a_ring_member_t * target,
+					so_5::mbox_id_t id )
+					: m_target{ target }
+					, m_id{ id }
+					{}
+
+				so_5::mbox_id_t
+				id() const override { return m_id; }
+
+				void
+				subscribe_event_handler(
+					const std::type_index & /*type_index*/,
+					so_5::abstract_message_sink_t & /*subscriber*/ ) override
+					{ /* Nothing to do */ }
+
+				void
+				unsubscribe_event_handler(
+					const std::type_index & /*type_index*/,
+					so_5::abstract_message_sink_t & /*subscriber*/ ) noexcept
+					{ /* Nothing to do */ }
+
+				std::string
+				query_name() const override { return "<special_direct_mbox>"; }
+
+				so_5::mbox_type_t
+				type() const override
+					{
+						return so_5::mbox_type_t::multi_producer_single_consumer;
+					}
+
+				void
+				do_deliver_message(
+					so_5::message_delivery_mode_t /*delivery_mode*/,
+					const std::type_index & msg_type,
+					const so_5::message_ref_t & message,
+					unsigned int /*redirection_deep*/ ) override
+					{
+						so_5::agent_t::call_push_demand(
+								*m_target,
+								so_5::execution_demand_t{
+										m_target,
+										nullptr,
+										m_id,
+										msg_type,
+										message,
+										&a_ring_member_t::direct_delivery_demand_handler
+							} );
+					}
+
+				void
+				set_delivery_filter(
+					const std::type_index & /*msg_type*/,
+					const so_5::delivery_filter_t & /*filter*/,
+					so_5::abstract_message_sink_t & /*subscriber*/ ) override
+					{
+						throw std::runtime_error{
+								"set_delivery_filter is not supported"
+							};
+					}
+
+				void
+				drop_delivery_filter(
+					const std::type_index & /*msg_type*/,
+					so_5::abstract_message_sink_t & /*subscriber*/ ) noexcept override
+					{ /* Nothing to do */ }
+
+				so_5::environment_t &
+				environment() const noexcept override
+					{
+						return m_target->so_environment();
+					}
+			};
+
 	public :
 		struct msg_start : public so_5::signal_t {};
 
@@ -159,10 +252,22 @@ class a_ring_member_t : public so_5::agent_t
 			};
 
 		a_ring_member_t(
-			so_5::environment_t & env,
+			context_t ctx,
 			const cfg_t & cfg,
 			measure_result_t & measure_result )
-			:	so_5::agent_t( env )
+			:	so_5::agent_t( ctx
+					+ custom_direct_mbox_factory(
+						[]( so_5::partially_constructed_agent_ptr_t agent_ptr,
+							so_5::mbox_t actual_mbox )
+						{
+							return so_5::mbox_t{
+								new special_direct_mbox_t{
+									static_cast< a_ring_member_t * >( agent_ptr.ptr() ),
+									actual_mbox->id()
+								}
+							};
+						} ) )
+
 			,	m_cfg( cfg )
 			,	m_measure_result( measure_result )
 			{}
@@ -174,33 +279,30 @@ class a_ring_member_t : public so_5::agent_t
 			}
 
 		void
-		so_define_agent() override
+		on_message(
+			const std::type_index & msg_type,
+			const so_5::message_ref_t & msg )
 			{
-				so_default_state()
-					.event( &a_ring_member_t::evt_start )
-					.event( &a_ring_member_t::evt_your_turn );
-			}
-
-		void
-		evt_start(mhood_t< msg_start >)
-			{
-				m_measure_result.m_start_time = steady_clock::now();
-
-				so_5::send< msg_your_turn >( m_next_mbox, 0ull );
-			}
-
-		void
-		evt_your_turn( const msg_your_turn & evt )
-			{
-				++m_rounds_passed;
-				if( m_rounds_passed < m_cfg.m_rounds )
-					so_5::send< msg_your_turn >(
-							m_next_mbox,
-							evt.m_request_number + 1 );
-				else
+				if( msg_type == typeid(msg_start) ) [[unlikely]]
 					{
-						m_measure_result.m_finish_time = steady_clock::now();
-						so_environment().stop();
+						m_measure_result.m_start_time = steady_clock::now();
+
+						so_5::send< msg_your_turn >( m_next_mbox, 0ull );
+					}
+				else if( msg_type == typeid(msg_your_turn) ) [[likely]]
+					{
+						auto * evt = static_cast<msg_your_turn *>(msg.get());
+
+						++m_rounds_passed;
+						if( m_rounds_passed < m_cfg.m_rounds )
+							so_5::send< msg_your_turn >(
+									m_next_mbox,
+									evt->m_request_number + 1 );
+						else
+							{
+								m_measure_result.m_finish_time = steady_clock::now();
+								so_environment().stop();
+							}
 					}
 			}
 
