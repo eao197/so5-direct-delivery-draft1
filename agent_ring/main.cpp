@@ -290,7 +290,21 @@ class a_ring_member_t : public a_ring_member_base_t
 			}
 
 	public :
-		struct msg_your_turn : public Your_Turn_Base_Type {};
+		struct msg_your_turn : public Your_Turn_Base_Type
+			{
+				static std::atomic< std::size_t > m_how_many_created;
+				static std::atomic< std::size_t > m_how_many_destroyed;
+
+				msg_your_turn()
+					{
+						++m_how_many_created;
+					}
+
+				~msg_your_turn() override
+					{
+						++m_how_many_destroyed;
+					}
+			};
 
 		a_ring_member_t(
 			context_t ctx,
@@ -367,6 +381,14 @@ class a_ring_member_t : public a_ring_member_base_t
 		unsigned int m_rounds_passed = 0;
 	};
 
+template< typename Your_Turn_Base_Type >
+std::atomic< std::size_t >
+a_ring_member_t<Your_Turn_Base_Type>::msg_your_turn::m_how_many_created{};
+
+template< typename Your_Turn_Base_Type >
+std::atomic< std::size_t >
+a_ring_member_t<Your_Turn_Base_Type>::msg_your_turn::m_how_many_destroyed{};
+
 const char *
 queue_lock_type_name( queue_lock_type_t t )
 	{
@@ -413,6 +435,24 @@ show_result(
 			", messages sent: " << total_msg_count <<
 			", price: " << price <<
 			", throughtput: " << throughtput << std::endl;
+
+		std::cout << "how many created    (signal): "
+				<< a_ring_member_t<so_5::signal_t>::msg_your_turn
+					::m_how_many_created.load()
+				<< std::endl;
+		std::cout << "how many destroyed  (signal): "
+				<< a_ring_member_t<so_5::signal_t>::msg_your_turn
+					::m_how_many_destroyed.load()
+				<< std::endl;
+
+		std::cout << "how many created   (message): "
+				<< a_ring_member_t<so_5::message_t>::msg_your_turn
+					::m_how_many_created.load()
+				<< std::endl;
+		std::cout << "how many destroyed (message): "
+				<< a_ring_member_t<so_5::message_t>::msg_your_turn
+					::m_how_many_destroyed.load()
+				<< std::endl;
 	}
 
 template<
