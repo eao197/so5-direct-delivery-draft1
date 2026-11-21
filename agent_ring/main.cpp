@@ -77,10 +77,11 @@ enum class queue_lock_type_t
 
 struct cfg_t
 	{
-		unsigned int	m_ring_size = 50000;
-		unsigned int	m_rounds = 1000;
+		unsigned int m_ring_size = 50000;
+		unsigned int m_rounds = 1000;
 
-		bool	m_direct_mboxes = false;
+		bool m_use_normal_mbox = false;
+		bool m_use_signals = false;
 
 		queue_lock_type_t m_queue_lock_type = queue_lock_type_t::combined;
 	};
@@ -105,6 +106,8 @@ try_parse_cmdline(
 							"-r, --rounds         count of full rounds around the ring\n"
 							"-L, --queue-lock     type of queue lock to be used:\n"
 							"                     combined, simple\n"
+							"-m, --normal-mbox    use normal direct mbox for messages\n"
+							"-S, --signal         your_turn as signal\n"
 							"-h, --help           show this help"
 							<< std::endl;
 					std::exit( 1 );
@@ -117,6 +120,10 @@ try_parse_cmdline(
 				mandatory_arg_to_value(
 						tmp_cfg.m_rounds, ++current, last_arg,
 						"-r", "count of full rounds around the ring" );
+			else if( is_arg( *current, "-m", "--normal-mbox" ) )
+				tmp_cfg.m_use_normal_mbox = true;
+			else if( is_arg( *current, "-S", "--signal" ) )
+				tmp_cfg.m_use_signals = true;
 			else if( is_arg( *current, "-L", "--queue-lock" ) )
 				{
 					std::string name;
@@ -144,7 +151,25 @@ struct measure_result_t
 		steady_clock::time_point m_finish_time;
 	};
 
-class a_ring_member_t : public so_5::agent_t
+class a_ring_member_base_t : public so_5::agent_t
+	{
+	protected :
+		so_5::mbox_t m_next_mbox;
+
+	public :
+		struct msg_start : public so_5::signal_t {};
+
+		using so_5::agent_t::agent_t;
+
+		void
+		set_next_mbox( const so_5::mbox_t & mbox )
+			{
+				m_next_mbox = mbox;
+			}
+	};
+
+template< typename Your_Turn_Base_Type >
+class a_ring_member_t : public a_ring_member_base_t
 	{
 		static void
 		direct_delivery_demand_handler(
@@ -205,14 +230,12 @@ class a_ring_member_t : public so_5::agent_t
 					{
 						so_5::agent_t::call_push_demand(
 								*m_target,
-								so_5::execution_demand_t{
-										m_target,
-										nullptr,
-										m_id,
-										msg_type,
-										message,
-										&a_ring_member_t::direct_delivery_demand_handler
-							} );
+								nullptr,
+								m_id,
+								msg_type,
+								message,
+								&a_ring_member_t::direct_delivery_demand_handler
+							);
 					}
 
 				void
@@ -239,65 +262,66 @@ class a_ring_member_t : public so_5::agent_t
 					}
 			};
 
-	public :
-		struct msg_start : public so_5::signal_t {};
-
-		struct msg_your_turn : public so_5::message_t
+		[[nodiscard]] static
+		context_t
+		prepare_context(
+			context_t ctx,
+			const cfg_t & cfg )
 			{
-				unsigned long long m_request_number;
+				if( !cfg.m_use_normal_mbox )
+					return ctx +
+						custom_direct_mbox_factory(
+							[]( so_5::partially_constructed_agent_ptr_t agent_ptr,
+								so_5::mbox_t actual_mbox )
+							{
+								return so_5::mbox_t{
+									std::make_unique<special_direct_mbox_t>(
+										static_cast< a_ring_member_t * >( agent_ptr.ptr() ),
+										actual_mbox->id()
+									)
+								};
+							} );
+				else
+					return ctx;
+			}
 
-				msg_your_turn( unsigned long long number )
-					:	m_request_number( number )
-				{}
-			};
+	public :
+		struct msg_your_turn : public Your_Turn_Base_Type {};
 
 		a_ring_member_t(
 			context_t ctx,
 			const cfg_t & cfg,
 			measure_result_t & measure_result )
-			:	so_5::agent_t( ctx
-					+ custom_direct_mbox_factory(
-						[]( so_5::partially_constructed_agent_ptr_t agent_ptr,
-							so_5::mbox_t actual_mbox )
-						{
-							return so_5::mbox_t{
-								new special_direct_mbox_t{
-									static_cast< a_ring_member_t * >( agent_ptr.ptr() ),
-									actual_mbox->id()
-								}
-							};
-						} ) )
-
-			,	m_cfg( cfg )
-			,	m_measure_result( measure_result )
+			: a_ring_member_base_t( prepare_context( ctx, cfg ) )
+			, m_cfg( cfg )
+			, m_measure_result( measure_result )
 			{}
 
 		void
-		set_next_mbox( const so_5::mbox_t & mbox )
+		so_define_agent() override
 			{
-				m_next_mbox = mbox;
+				so_subscribe_self()
+					.event( &a_ring_member_t::evt_start )
+					.event( &a_ring_member_t::evt_your_turn )
+					;
 			}
 
 		void
 		on_message(
 			const std::type_index & msg_type,
-			const so_5::message_ref_t & msg )
+			const so_5::message_ref_t & /*msg*/ )
 			{
 				if( msg_type == typeid(msg_start) ) [[unlikely]]
 					{
 						m_measure_result.m_start_time = steady_clock::now();
 
-						so_5::send< msg_your_turn >( m_next_mbox, 0ull );
+						so_5::send< msg_your_turn >( m_next_mbox );
 					}
 				else if( msg_type == typeid(msg_your_turn) ) [[likely]]
 					{
-						auto * evt = static_cast<msg_your_turn *>(msg.get());
-
 						++m_rounds_passed;
 						if( m_rounds_passed < m_cfg.m_rounds )
-							so_5::send< msg_your_turn >(
-									m_next_mbox,
-									evt->m_request_number + 1 );
+							so_5::send< msg_your_turn >( m_next_mbox );
 						else
 							{
 								m_measure_result.m_finish_time = steady_clock::now();
@@ -306,9 +330,28 @@ class a_ring_member_t : public so_5::agent_t
 					}
 			}
 
-	private :
-		so_5::mbox_t m_next_mbox;
+		void
+		evt_start( mhood_t<msg_start> )
+			{
+				m_measure_result.m_start_time = steady_clock::now();
 
+				so_5::send< msg_your_turn >( m_next_mbox );
+			}
+
+		void
+		evt_your_turn( mhood_t<msg_your_turn> )
+			{
+				++m_rounds_passed;
+				if( m_rounds_passed < m_cfg.m_rounds )
+					so_5::send< msg_your_turn >( m_next_mbox );
+				else
+					{
+						m_measure_result.m_finish_time = steady_clock::now();
+						so_environment().stop();
+					}
+			}
+
+	private :
 		const cfg_t m_cfg;
 		measure_result_t & m_measure_result;
 
@@ -331,7 +374,10 @@ show_cfg(
 		std::cout << "Configuration:"
 			<< "\n\t" "ring size: " << cfg.m_ring_size
 			<< "\n\t" "rounds: " << cfg.m_rounds
-			<< "\n\t" "queue_lock: " << queue_lock_type_name( cfg.m_queue_lock_type );
+			<< "\n\t" "queue_lock: " << queue_lock_type_name( cfg.m_queue_lock_type )
+			<< "\n\t" "normal mbox: " << (cfg.m_use_normal_mbox ? "yes" : "no")
+			<< "\n\t" "your_turn as signal: " << (cfg.m_use_signals ? "yes" : "no")
+			;
 		std::cout << std::endl;
 	}
 
@@ -399,6 +445,21 @@ create_disp_binder(
 		return make_dispatcher( env, "disp", disp_params ).binder();
 	}
 
+[[nodiscard]]
+a_ring_member_base_t *
+make_appropriate_agent(
+	const cfg_t & cfg,
+	measure_result_t & result,
+	so_5::coop_t & coop )
+	{
+		if( cfg.m_use_signals )
+			return coop.make_agent< a_ring_member_t< so_5::signal_t > >(
+					cfg, result );
+		else
+			return coop.make_agent< a_ring_member_t< so_5::message_t > >(
+					cfg, result );
+	}
+
 void
 create_coop(
 	const cfg_t & cfg,
@@ -409,12 +470,12 @@ create_coop(
 			create_disp_binder( env, cfg ),
 			[&]( so_5::coop_t & coop )
 			{
-				std::vector< a_ring_member_t * > agents;
+				std::vector< a_ring_member_base_t * > agents;
 				agents.reserve( cfg.m_ring_size );
 
 				for( unsigned int i = 0; i != cfg.m_ring_size; ++i )
 					{
-						auto member = coop.make_agent< a_ring_member_t >( cfg, result );
+						auto member = make_appropriate_agent( cfg, result, coop );
 						agents.push_back( member );
 					}
 
@@ -427,7 +488,7 @@ create_coop(
 				return agents[ 0 ]->so_direct_mbox();
 			} );
 
-		so_5::send< a_ring_member_t::msg_start >( first_agent_mbox );
+		so_5::send< a_ring_member_base_t::msg_start >( first_agent_mbox );
 	}
 
 int

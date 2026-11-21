@@ -39,7 +39,7 @@ set(SOBJECTIZER_SANITIZE ${DEMO_SANITIZE} CACHE INTERNAL "")
 
 FetchContent_Declare(sobjectizer
 	GIT_REPOSITORY https://github.com/stiffstream/sobjectizer
-	GIT_TAG v5.8.6
+	GIT_TAG v5.8.7-alpha3
 	SOURCE_SUBDIR dev
 	OVERRIDE_FIND_PACKAGE
 	LOG_DOWNLOAD TRUE
