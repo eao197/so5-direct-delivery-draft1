@@ -82,6 +82,7 @@ struct cfg_t
 
 		bool m_use_normal_mbox = false;
 		bool m_use_signals = false;
+		bool m_use_redirects = false;
 
 		queue_lock_type_t m_queue_lock_type = queue_lock_type_t::combined;
 	};
@@ -108,6 +109,7 @@ try_parse_cmdline(
 							"                     combined, simple\n"
 							"-m, --normal-mbox    use normal direct mbox for messages\n"
 							"-S, --signal         your_turn as signal\n"
+							"-R, --redirects      use redirects for your_turn messages\n"
 							"-h, --help           show this help"
 							<< std::endl;
 					std::exit( 1 );
@@ -124,6 +126,8 @@ try_parse_cmdline(
 				tmp_cfg.m_use_normal_mbox = true;
 			else if( is_arg( *current, "-S", "--signal" ) )
 				tmp_cfg.m_use_signals = true;
+			else if( is_arg( *current, "-R", "--redirects" ) )
+				tmp_cfg.m_use_redirects = true;
 			else if( is_arg( *current, "-L", "--queue-lock" ) )
 				{
 					std::string name;
@@ -339,11 +343,16 @@ class a_ring_member_t : public a_ring_member_base_t
 			}
 
 		void
-		evt_your_turn( mhood_t<msg_your_turn> )
+		evt_your_turn( mhood_t<msg_your_turn> cmd )
 			{
 				++m_rounds_passed;
 				if( m_rounds_passed < m_cfg.m_rounds )
-					so_5::send< msg_your_turn >( m_next_mbox );
+					{
+						if( m_cfg.m_use_redirects )
+							so_5::send( m_next_mbox, cmd );
+						else
+							so_5::send< msg_your_turn >( m_next_mbox );
+					}
 				else
 					{
 						m_measure_result.m_finish_time = steady_clock::now();
@@ -377,6 +386,7 @@ show_cfg(
 			<< "\n\t" "queue_lock: " << queue_lock_type_name( cfg.m_queue_lock_type )
 			<< "\n\t" "normal mbox: " << (cfg.m_use_normal_mbox ? "yes" : "no")
 			<< "\n\t" "your_turn as signal: " << (cfg.m_use_signals ? "yes" : "no")
+			<< "\n\t" "use redirects: " << (cfg.m_use_redirects ? "yes" : "no")
 			;
 		std::cout << std::endl;
 	}
