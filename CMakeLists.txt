@@ -48,7 +48,21 @@ FetchContent_Declare(sobjectizer
 	LOG_INSTALL TRUE
 )
 
-FetchContent_MakeAvailable(sobjectizer)
+set(MI_BUILD_SHARED OFF CACHE INTERNAL "")
+set(MI_BUILD_OBJECT OFF CACHE INTERNAL "")
+set(MI_BUILD_TESTS OFF CACHE INTERNAL "")
+set(MI_OVERRIDE ON CACHE BOOL "" FORCE)
+
+FetchContent_Declare(mimalloc
+	GIT_REPOSITORY https://github.com/microsoft/mimalloc
+	GIT_TAG v3.7.0
+	LOG_DOWNLOAD TRUE
+	LOG_CONFIGURE TRUE
+	LOG_BUILD TRUE
+	LOG_INSTALL TRUE
+)
+
+FetchContent_MakeAvailable(sobjectizer mimalloc)
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
 	add_compile_options(
