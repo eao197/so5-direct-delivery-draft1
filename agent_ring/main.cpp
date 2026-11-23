@@ -80,7 +80,7 @@ struct cfg_t
 		unsigned int m_ring_size = 50000;
 		unsigned int m_rounds = 1000;
 
-		bool m_use_normal_mbox = false;
+		bool m_direct_delivery = false;
 		bool m_use_signals = false;
 		bool m_use_redirects = false;
 
@@ -107,7 +107,8 @@ try_parse_cmdline(
 							"-r, --rounds         count of full rounds around the ring\n"
 							"-L, --queue-lock     type of queue lock to be used:\n"
 							"                     combined, simple\n"
-							"-m, --normal-mbox    use normal direct mbox for messages\n"
+							"-d, --direct         use direct delivery instead of normal\n"
+							"                     event-handler search\n"
 							"-S, --signal         your_turn as signal\n"
 							"-R, --redirects      use redirects for your_turn messages\n"
 							"-h, --help           show this help"
@@ -122,8 +123,8 @@ try_parse_cmdline(
 				mandatory_arg_to_value(
 						tmp_cfg.m_rounds, ++current, last_arg,
 						"-r", "count of full rounds around the ring" );
-			else if( is_arg( *current, "-m", "--normal-mbox" ) )
-				tmp_cfg.m_use_normal_mbox = true;
+			else if( is_arg( *current, "-d", "--direct" ) )
+				tmp_cfg.m_direct_delivery = true;
 			else if( is_arg( *current, "-S", "--signal" ) )
 				tmp_cfg.m_use_signals = true;
 			else if( is_arg( *current, "-R", "--redirects" ) )
@@ -272,7 +273,7 @@ class a_ring_member_t : public a_ring_member_base_t
 			context_t ctx,
 			const cfg_t & cfg )
 			{
-				if( !cfg.m_use_normal_mbox )
+				if( cfg.m_direct_delivery )
 					return ctx +
 						custom_direct_mbox_factory(
 							[]( so_5::partially_constructed_agent_ptr_t agent_ptr,
@@ -406,7 +407,7 @@ show_cfg(
 			<< "\n\t" "ring size: " << cfg.m_ring_size
 			<< "\n\t" "rounds: " << cfg.m_rounds
 			<< "\n\t" "queue_lock: " << queue_lock_type_name( cfg.m_queue_lock_type )
-			<< "\n\t" "normal mbox: " << (cfg.m_use_normal_mbox ? "yes" : "no")
+			<< "\n\t" "direct delivery: " << (cfg.m_direct_delivery ? "yes" : "no")
 			<< "\n\t" "your_turn as signal: " << (cfg.m_use_signals ? "yes" : "no")
 			<< "\n\t" "use redirects: " << (cfg.m_use_redirects ? "yes" : "no")
 			;
@@ -422,17 +423,14 @@ show_result(
 				duration_cast< milliseconds >( result.m_finish_time -
 						result.m_start_time ).count();
 
-		const unsigned long long total_msg_count =
-			static_cast< unsigned long long >( cfg.m_ring_size ) * cfg.m_rounds;
-
 		double price = static_cast< double >( total_msec ) /
-				double(total_msg_count) / 1000.0;
+				double(cfg.m_rounds) / 1000.0;
 		double throughtput = 1 / price;
 
 		std::cout.precision( 10 );
 		std::cout <<
 			"total time: " << double(total_msec) / 1000.0 << 
-			", messages sent: " << total_msg_count <<
+			", rounds: " << cfg.m_rounds <<
 			", price: " << price <<
 			", throughtput: " << throughtput << std::endl;
 
