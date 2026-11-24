@@ -310,11 +310,14 @@ class a_ring_member_t : public a_ring_member_base_t
 		a_ring_member_t(
 			context_t ctx,
 			const cfg_t & cfg,
-			measure_result_t & measure_result )
+			measure_result_t & measure_result,
+			bool is_first )
 			: a_ring_member_base_t( prepare_context( ctx, cfg ) )
 			, m_cfg( cfg )
 			, m_measure_result( measure_result )
-			{}
+			, m_is_first{ is_first }
+			{
+			}
 
 		void
 		so_define_agent() override
@@ -333,20 +336,23 @@ class a_ring_member_t : public a_ring_member_base_t
 				if( msg_type == typeid(msg_start) ) [[unlikely]]
 					{
 						m_measure_result.m_start_time = steady_clock::now();
-
-						so_5::send< msg_your_turn >( m_next_mbox );
 					}
 				else if( msg_type == typeid(msg_your_turn) ) [[likely]]
 					{
-						++m_rounds_passed;
-						if( m_rounds_passed < m_cfg.m_rounds )
-							so_5::send< msg_your_turn >( m_next_mbox );
-						else
+						if( m_is_first ) [[unlikely]]
 							{
-								m_measure_result.m_finish_time = steady_clock::now();
-								so_environment().stop();
+								++m_rounds_passed;
+								if( m_rounds_passed >= m_cfg.m_rounds )
+									{
+										m_measure_result.m_finish_time = steady_clock::now();
+										so_environment().stop();
+
+										return;
+									}
 							}
 					}
+
+				so_5::send< msg_your_turn >( m_next_mbox );
 			}
 
 		void
@@ -360,24 +366,29 @@ class a_ring_member_t : public a_ring_member_base_t
 		void
 		evt_your_turn( mhood_t<msg_your_turn> cmd )
 			{
-				++m_rounds_passed;
-				if( m_rounds_passed < m_cfg.m_rounds )
+				if( m_is_first ) [[unlikely]]
 					{
-						if( m_cfg.m_use_redirects )
-							so_5::send( m_next_mbox, cmd );
-						else
-							so_5::send< msg_your_turn >( m_next_mbox );
+						++m_rounds_passed;
+						if( m_rounds_passed >= m_cfg.m_rounds )
+							{
+								m_measure_result.m_finish_time = steady_clock::now();
+								so_environment().stop();
+
+								return;
+							}
 					}
+
+				if( m_cfg.m_use_redirects )
+					so_5::send( m_next_mbox, cmd );
 				else
-					{
-						m_measure_result.m_finish_time = steady_clock::now();
-						so_environment().stop();
-					}
+					so_5::send< msg_your_turn >( m_next_mbox );
 			}
 
 	private :
 		const cfg_t m_cfg;
 		measure_result_t & m_measure_result;
+
+		bool m_is_first;
 
 		unsigned int m_rounds_passed = 0;
 	};
@@ -498,14 +509,15 @@ a_ring_member_base_t *
 make_appropriate_agent(
 	const cfg_t & cfg,
 	measure_result_t & result,
+	bool is_first,
 	so_5::coop_t & coop )
 	{
 		if( cfg.m_use_signals )
 			return coop.make_agent< a_ring_member_t< so_5::signal_t > >(
-					cfg, result );
+					cfg, result, is_first );
 		else
 			return coop.make_agent< a_ring_member_t< so_5::message_t > >(
-					cfg, result );
+					cfg, result, is_first );
 	}
 
 void
@@ -521,10 +533,16 @@ create_coop(
 				std::vector< a_ring_member_base_t * > agents;
 				agents.reserve( cfg.m_ring_size );
 
+				bool is_first = true;
 				for( unsigned int i = 0; i != cfg.m_ring_size; ++i )
 					{
-						auto member = make_appropriate_agent( cfg, result, coop );
+						auto member = make_appropriate_agent( cfg, result,
+								is_first,
+								coop );
+
 						agents.push_back( member );
+
+						is_first = false;
 					}
 
 				for( unsigned int i = 0; i != cfg.m_ring_size; ++i )
